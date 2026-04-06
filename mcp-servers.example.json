@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "approval": {
+      "command": "python3",
+      "args": ["/path/to/approval_server.py", "/path/to/approval-policy.json"]
+    }
+  }
+}

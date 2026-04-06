@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["tools", "folders"],
+  "properties": {
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of Claude Code tool names to allow (e.g. Read, Write, Edit, Glob, Grep, Bash)"
+    },
+    "folders": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["read", "write"]
+        }
+      },
+      "description": "Map of absolute folder paths to permission arrays. Files under a folder inherit its permissions."
+    }
+  }
+}

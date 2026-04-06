@@ -1,0 +1,7 @@
+{
+  "tools": ["Read", "Write", "Edit", "Glob", "Grep"],
+  "folders": {
+    "/tmp/my-project": ["read", "write"],
+    "/home/user/reference-docs": ["read"]
+  }
+}
