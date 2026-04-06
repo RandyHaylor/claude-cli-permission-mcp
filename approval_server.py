@@ -1,54 +1,126 @@
 #!/usr/bin/env python3
 """
-Minimal MCP approval server using stdio transport
+Lightweight MCP approval server for claude -p permission requests.
+
+Reads a JSON policy file that specifies:
+- Allowed tools
+- Allowed folders (with read/write permissions)
+
+Usage:
+  1. Create a policy file (e.g. approval-policy.json):
+     {
+       "tools": ["Read", "Write", "Edit", "Glob", "Grep"],
+       "folders": {
+         "/tmp/my-project": ["read", "write"],
+         "/home/user/reference": ["read"]
+       }
+     }
+
+  2. Add to mcp-servers.json:
+     {
+       "mcpServers": {
+         "approval": {
+           "command": "python3",
+           "args": ["/path/to/approval_server.py", "/path/to/approval-policy.json"]
+         }
+       }
+     }
+
+  3. Run claude -p with:
+     claude -p --mcp-config mcp-servers.json \\
+       --permission-prompt-tool mcp__approval__permissions__approve \\
+       "your prompt"
 """
 
-from mcp.server.fastmcp import FastMCP
-import datetime
+from __future__ import annotations
+
 import json
+import logging
+import sys
+from pathlib import Path
 
-# Create MCP server
-mcp = FastMCP("approval-server")
+from mcp.server.fastmcp import FastMCP
 
-def log_to_file(message):
-    """Simple file logging to verify the approval function is called"""
-    with open("approval_log.txt", "a") as f:
-        f.write(f"{datetime.datetime.now()} - {message}\n")
+log = logging.getLogger("ntt.approval")
+
+mcp = FastMCP("approval")
+
+# Load policy from the file path passed as first CLI arg.
+_policy_path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+_policy: dict = {}
+
+if _policy_path and _policy_path.exists():
+    _policy = json.loads(_policy_path.read_text(encoding="utf-8"))
+    log.info("Loaded policy from %s", _policy_path)
+else:
+    log.warning("No policy file found at %s — denying everything", _policy_path)
+
+_allowed_tools: list[str] = _policy.get("tools", [])
+_folders: dict[str, list[str]] = _policy.get("folders", {})
+
+
+def _check_path(file_path: str, needs_write: bool) -> bool:
+    """Check if a file path is allowed by the folder policy."""
+    try:
+        resolved = Path(file_path).resolve()
+    except (ValueError, OSError):
+        return False
+
+    for folder, perms in _folders.items():
+        folder_resolved = Path(folder).resolve()
+        try:
+            resolved.relative_to(folder_resolved)
+        except ValueError:
+            continue
+        # Path is under this folder — check permissions.
+        if needs_write and "write" not in perms:
+            return False
+        if not needs_write and "read" not in perms:
+            return False
+        return True
+
+    return False
+
 
 @mcp.tool()
 async def permissions__approve(tool_name: str, input: dict, reason: str = "") -> dict:
-    """
-    Approve or deny permission requests from Claude.
-    
-    Returns dict with behavior:"allow"/"deny"
-    """
-    # Log that we were called
-    log_to_file(f"CALLED with tool_name={tool_name}, input={json.dumps(input)}")
-    
-    # APPROVE safe_operation
-    if "safe_operation" in tool_name:
-        log_to_file(f"APPROVED: {tool_name}")
-        return {
-            "behavior": "allow",
-            "updatedInput": input
-        }
-    
-    # DENY dangerous_operation
-    if "dangerous_operation" in tool_name:
-        log_to_file(f"DENIED: {tool_name}")
+    """Approve or deny permission requests based on policy file."""
+
+    # Check if tool is allowed at all.
+    if tool_name not in _allowed_tools:
         return {
             "behavior": "deny",
-            "message": "This operation is not allowed for security reasons"
+            "message": f"Tool '{tool_name}' not in allowed tools list",
         }
-    
-    # Default: deny unknown operations
-    log_to_file(f"DENIED (unknown): {tool_name}")
+
+    # For file tools, check the path against folder policy.
+    if tool_name in ("Read", "Glob", "Grep"):
+        file_path = input.get("file_path") or input.get("path") or input.get("pattern", "")
+        if not _check_path(file_path, needs_write=False):
+            return {
+                "behavior": "deny",
+                "message": f"Read not allowed for path: {file_path}",
+            }
+
+    if tool_name in ("Write", "Edit"):
+        file_path = input.get("file_path", "")
+        if not _check_path(file_path, needs_write=True):
+            return {
+                "behavior": "deny",
+                "message": f"Write not allowed for path: {file_path}",
+            }
+
+    if tool_name == "Bash":
+        # Bash is allowed only if it's in the tools list.
+        # No path checking — the tool list is the gate.
+        pass
+
     return {
-        "behavior": "deny",
-        "message": f"Unknown operation: {tool_name}"
+        "behavior": "allow",
+        "updatedInput": input,
     }
 
+
 if __name__ == "__main__":
-    # Run as stdio server
     import asyncio
     asyncio.run(mcp.run())
