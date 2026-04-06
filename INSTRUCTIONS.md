@@ -131,18 +131,66 @@ claude -p \
 
 `--allowedTools` makes tools available to Claude but does not grant system-level permissions to files and applications. In `-p` mode, the tools will exist but can't actually read or write anything — unless you also pass `--dangerously-skip-permissions`, which removes all safety. The approval MCP server is the proper solution: it grants granular, policy-controlled permissions without dangerous mode.
 
+## Validating your setup
+
+Use these two tests to confirm your approval server is working correctly.
+
+### Test 1: allowed tool succeeds
+
+Create a minimal policy that allows Write to `/tmp/approval-test`:
+
+```bash
+mkdir -p /tmp/approval-test
+echo '{"tools": ["Write", "Read"], "folders": {"/tmp/approval-test": ["read", "write"]}}' > /tmp/test-policy.json
+echo '{"mcpServers": {"approval": {"command": "python3", "args": ["/path/to/approval_server.py", "/tmp/test-policy.json"]}}}' > /tmp/test-mcp.json
+
+claude -p "Write the text 'hello from approval test' to /tmp/approval-test/output.txt" \
+  --mcp-config /tmp/test-mcp.json \
+  --permission-prompt-tool mcp__approval__permissions__approve \
+  --output-format text \
+  --model claude-haiku-4-5-20251001
+```
+
+Expected: Claude reports success. Verify the file was actually written:
+
+```bash
+cat /tmp/approval-test/output.txt
+# → hello from approval test
+```
+
+### Test 2: denied tool is blocked
+
+```bash
+claude -p "Run bash: echo \$RANDOM > /tmp/approval-test/bash-test.txt, then tell me what number it wrote" \
+  --mcp-config /tmp/test-mcp.json \
+  --permission-prompt-tool mcp__approval__permissions__approve \
+  --output-format text \
+  --model claude-haiku-4-5-20251001
+```
+
+Expected: Claude reports that Bash is not allowed in the current permission settings. Verify the file was NOT created:
+
+```bash
+ls /tmp/approval-test/
+# → only output.txt — bash-test.txt does not exist
+```
+
+### Important: watch for model fabrication
+
+When a tool is denied, the model may still **appear** to report a result (e.g. claiming `echo denied-test` printed `denied-test`). This is the model fabricating output, not the command actually running. Always verify deny behavior by checking for the real side effect (file existence, network call, etc.) — not just the model's response text.
+
+The reliable deny test is to ask for a side effect that can be independently verified (file creation, specific content with `$RANDOM`, etc.).
+
 ## Verified behavior
 
-Tested with policy `{"tools": ["Read", "Write", "Edit", "Glob", "Grep"], "folders": {"/tmp": ["read", "write"]}}`:
+Tested with policy `{"tools": ["Write", "Read"], "folders": {"/tmp/approval-test": ["read", "write"]}}`:
 
 | Action | Result |
 |--------|--------|
-| Write to `/tmp/file.txt` | Approved |
-| Read from `/tmp/file.txt` | Approved |
-| Bash `echo > /tmp/file.txt` | **Denied** — Bash not in tools list |
-| Write to `/home/user/file.txt` | **Denied** — path not under allowed folder |
+| Write to `/tmp/approval-test/output.txt` | Approved — file created |
+| Bash `echo $RANDOM > /tmp/approval-test/bash-test.txt` | **Denied** — Bash not in tools list, file not created |
 
-When Bash was denied, Claude automatically fell back to using the Write tool instead. Denials appear in `stream-json` output under `permission_denials`.
+When Bash is denied, the model surfaces the block to the caller ("The Bash tool isn't currently allowed in your permission settings"). Denied tools appear in `stream-json` output under `permission_denials`.
 
 ## Files
 
